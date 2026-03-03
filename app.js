@@ -71,7 +71,7 @@ const DEFAULT_DATA = {
       {id:'cat8',name:'Trade',       icon:'⚖️',color:'#1abc9c'},
       {id:'cat9',name:'Other',       icon:'📦',color:'#7f8c8d'},
     ],
-    bankBalance: null, cashBalance: null, goldEntries: [],
+    bankBalance: null, cashBalance: null, goldEntries: [], goldFund: [],
     cachedGoldPrice: null, cachedGoldTs: null, cachedEgpRate: null,
     budgets: [], goals: [],
   },
@@ -161,8 +161,25 @@ function toast(msg, dur=2300) { const el=document.getElementById('toast'); el.te
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 /* ══ MODAL ═══════════════════════════════════════ */
-function showModal(html) { document.getElementById('modal-inner').innerHTML=html; document.getElementById('modal-overlay').classList.remove('hidden'); }
-function hideModal()     { document.getElementById('modal-overlay').classList.add('hidden'); document.getElementById('modal-inner').innerHTML=''; }
+let _modalProtected = false; // prevents accidental dismiss when writing long text
+function showModal(html, protect=false) {
+  _modalProtected = protect;
+  document.getElementById('modal-inner').innerHTML=html;
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+function hideModal() {
+  if (_modalProtected) {
+    // Don't dismiss on backdrop tap when the user is actively writing
+    return;
+  }
+  document.getElementById('modal-overlay').classList.add('hidden');
+  document.getElementById('modal-inner').innerHTML='';
+}
+function forceHideModal() {
+  _modalProtected = false;
+  document.getElementById('modal-overlay').classList.add('hidden');
+  document.getElementById('modal-inner').innerHTML='';
+}
 
 /* ══ FAB ═════════════════════════════════════════ */
 function addFAB(icon, fn) {
@@ -216,7 +233,7 @@ const TAB_META = {
 
 function setupNav() {
   document.querySelectorAll('.nav-tab').forEach(btn => btn.addEventListener('click', () => showTab(btn.dataset.tab)));
-  document.getElementById('modal-close').addEventListener('click', hideModal);
+  document.getElementById('modal-close').addEventListener('click', forceHideModal);
   document.getElementById('modal-overlay').addEventListener('click', e => { if(e.target.id==='modal-overlay') hideModal(); });
   document.getElementById('back-btn').addEventListener('click', () => showTab('home'));
   document.getElementById('settings-btn').addEventListener('click', openSettings);
@@ -621,11 +638,17 @@ function renderCoinLog(el) {
   const months = [...new Set(txs.map(t=>t.date.slice(0,7)))].sort().reverse();
   const filt = STATE.txFilter;
 
-  // Summary for current month
-  const mTxs = txs.filter(t=>t.date.slice(0,7)===today().slice(0,7));
+  // FIX #3 — CARRY-FORWARD
+  // Compute current month in/out
+  const curMo = today().slice(0,7);
+  const mTxs = txs.filter(t=>t.date.slice(0,7)===curMo);
   const income  = mTxs.filter(t=>t.type==='income').reduce((a,t)=>a+t.amount,0);
   const expense = mTxs.filter(t=>t.type==='expense').reduce((a,t)=>a+t.amount,0);
   const net = income - expense;
+  // Net of everything recorded BEFORE this month
+  const prevNet = txs.filter(t=>t.date.slice(0,7)<curMo)
+                     .reduce((a,t)=>t.type==='income'?a+t.amount:a-t.amount, 0);
+  const runningTotal = prevNet + net;
 
   el.innerHTML = `
     <div class="summary-bar">
@@ -639,9 +662,16 @@ function renderCoinLog(el) {
       </div>
       <div class="summary-cell">
         <div class="summary-cell-label">Net</div>
-        <div class="summary-cell-val ${net>=0?'text-green':'text-red'}">${fmtEGP(Math.abs(net))}</div>
+        <div class="summary-cell-val ${net>=0?'text-green':'text-red'}">${net<0?'−':''}${fmtEGP(Math.abs(net))}</div>
       </div>
     </div>
+    ${prevNet!==0?`<div class="carry-bar">
+      <span class="carry-label">Prior months</span>
+      <span class="carry-val ${prevNet>=0?'text-green':'text-red'}">${prevNet<0?'−':''}${fmtEGP(Math.abs(prevNet))}</span>
+      <span class="carry-arrow">→</span>
+      <span class="carry-label">Running total</span>
+      <span class="carry-val ${runningTotal>=0?'text-green':'text-red'}">${runningTotal<0?'−':''}${fmtEGP(Math.abs(runningTotal))}</span>
+    </div>`:''}
     <div class="filter-row">
       <div class="filter-chip ${filt==='all'?'active':''}" onclick="setTxFilter('all')">All</div>
       <div class="filter-chip ${filt==='income'?'active':''}" onclick="setTxFilter('income')">Income</div>
@@ -1095,7 +1125,23 @@ function renderVaultContent(el) {
         </div>`;
       }).join('') : '<div class="empty-state"><div class="empty-icon">◈</div><div class="empty-title">No gold entries</div><div class="empty-sub">Record your reserve holdings</div></div>'}
     </div>
-    <button class="btn btn-primary btn-full mt-8" onclick="showAddGold()">⊕ Add Gold Entry</button>`;
+    <button class="btn btn-primary btn-full mt-8" onclick="showAddGold()">⊕ Add Gold Entry</button>
+    ${(DATA.treasury.goldFund||[]).length ? `
+    <div class="section-title mt-16">Gold Fund</div>
+    <div class="card">
+      ${(DATA.treasury.goldFund||[]).map(f=>{
+        const isConverted = !!f.convertedId;
+        return '<div class="gold-item">'
+          + '<div style="flex:1">'
+          + '<div class="gold-item-grams">'+(isConverted?'✓ Converted':'⏳ Reserved')+'</div>'
+          + '<div class="gold-item-meta">'+formatDate(f.date)+' · '+fmtEGP(f.amount)+'</div>'
+          + (f.note?'<div class="gold-item-meta">'+esc(f.note)+'</div>':'')
+          + '</div>'
+          + '<div class="gold-item-now" style="color:'+(isConverted?'var(--text-stone)':'var(--amber)')+'">'+fmtEGP(f.amount)+'</div>'
+          + (isConverted?'':'<button class="tx-del" onclick="deleteGoldFund(\''+f.id+'\')">✕</button>')
+          + '</div>';
+      }).join('')}
+    </div>` : ''}`;
 }
 
 function setGoldKarat(k) { CONFIG.goldKarat=k; saveConfig(); renderCoinBody(); }
@@ -1212,27 +1258,106 @@ function saveManualGoldPrice() {
 
 function showAddGold() {
   const karat = CONFIG.goldKarat||21;
-  showModal(`<div class="modal-title">◈ Add Gold Entry</div>
-    <div class="form-row">
-      <div class="form-group"><label class="form-label">Grams</label><input type="number" id="gold-grams" class="form-control" placeholder="e.g. 10" step="0.01" min="0.01" inputmode="decimal"></div>
-      <div class="form-group"><label class="form-label">Karat</label>
-        <select id="gold-karat" class="form-control">${[21,24,18,14].map(k=>`<option value="${k}" ${k===karat?'selected':''}>${k}K</option>`).join('')}</select>
-      </div>
-    </div>
-    <div class="form-group"><label class="form-label">Paid (EGP)</label><input type="number" id="gold-paid" class="form-control" placeholder="Total cost" min="0" inputmode="decimal"></div>
-    <div class="form-group"><label class="form-label">Date purchased</label><input type="date" id="gold-date" class="form-control" value="${today()}"></div>
-    <div class="form-group"><label class="form-label">Notes</label><input type="text" id="gold-note" class="form-control" placeholder="Optional"></div>
-    <button class="btn btn-primary btn-full" onclick="saveGold()">Record</button>`);
+  /* FIX #4 — Two tabs: Physical Gold and Gold Fund */
+  const fundHtml = '<div class="form-hint" style="margin-bottom:12px">Set aside money for a future gold purchase. This amount is deducted from your treasury as an expense and held here until you buy the gold.</div>'
+    + '<div class="form-group"><label class="form-label">Amount (EGP)</label><input type="number" id="fund-amount" class="form-control" placeholder="e.g. 5000" min="1" inputmode="decimal"></div>'
+    + '<div class="form-group"><label class="form-label">Date</label><input type="date" id="fund-date" class="form-control" value="'+today()+'"></div>'
+    + '<div class="form-group"><label class="form-label">Notes</label><input type="text" id="fund-note" class="form-control" placeholder="Optional"></div>'
+    + '<button class="btn btn-primary btn-full mt-4" onclick="saveGoldFund()">Reserve Funds</button>';
+  const pendingFunds = (DATA.treasury.goldFund||[]).filter(f=>!f.convertedId);
+  const fundSel = pendingFunds.length
+    ? '<div class="form-group"><label class="form-label">Convert from Gold Fund? <span class="form-hint">(selecting this avoids logging a duplicate expense)</span></label>'
+      + '<select id="gold-from-fund" class="form-control"><option value="">— Fresh purchase —</option>'
+      + pendingFunds.map(f=>'<option value="'+f.id+'">'+formatDate(f.date)+' · '+fmtEGP(f.amount)+(f.note?' · '+esc(f.note):'')+' </option>').join('')
+      + '</select></div>' : '';
+  const goldHtml = '<div class="form-row">'
+    + '<div class="form-group"><label class="form-label">Grams</label><input type="number" id="gold-grams" class="form-control" placeholder="e.g. 10" step="0.01" min="0.01" inputmode="decimal"></div>'
+    + '<div class="form-group"><label class="form-label">Karat</label><select id="gold-karat" class="form-control">'
+    + [21,24,18,14].map(k=>'<option value="'+k+'"'+(k===karat?' selected':'')+'>'+k+'K</option>').join('')
+    + '</select></div></div>'
+    + '<div class="form-group"><label class="form-label">Paid (EGP)</label><input type="number" id="gold-paid" class="form-control" placeholder="Total cost" min="0" inputmode="decimal"></div>'
+    + fundSel
+    + '<div class="form-group"><label class="form-label">Date purchased</label><input type="date" id="gold-date" class="form-control" value="'+today()+'"></div>'
+    + '<div class="form-group"><label class="form-label">Notes</label><input type="text" id="gold-note" class="form-control" placeholder="Optional"></div>'
+    + '<button class="btn btn-primary btn-full" onclick="saveGold()">Record Gold</button>';
+
+  showModal('<div class="modal-title">◈ Reserve Entry</div>'
+    + '<div style="display:flex;gap:8px;margin-bottom:16px">'
+    + '<button class="btn btn-sm btn-primary" id="gold-tab-gold" onclick="switchGoldTab(\'gold\')">🪙 Physical Gold</button>'
+    + '<button class="btn btn-sm" id="gold-tab-fund" onclick="switchGoldTab(\'fund\')">💰 Gold Fund</button></div>'
+    + '<div id="gold-form-inner">'+goldHtml+'</div>');
+}
+
+function switchGoldTab(type) {
+  const karat = CONFIG.goldKarat||21;
+  document.getElementById('gold-tab-gold').className = 'btn btn-sm'+(type==='gold'?' btn-primary':'');
+  document.getElementById('gold-tab-fund').className = 'btn btn-sm'+(type==='fund'?' btn-primary':'');
+  // Re-open to rebuild with fresh pending funds list
+  showAddGold();
+  // Then switch the inner content
+  setTimeout(()=>{
+    if(type==='fund'){
+      document.getElementById('gold-tab-gold').className='btn btn-sm';
+      document.getElementById('gold-tab-fund').className='btn btn-sm btn-primary';
+    }
+  },0);
+}
+
+function saveGoldFund() {
+  const amount = parseFloat(document.getElementById('fund-amount')?.value);
+  if (!amount || amount <= 0) { toast('Enter a valid amount'); return; }
+  const date = document.getElementById('fund-date')?.value || today();
+  const note = document.getElementById('fund-note')?.value || '';
+  const fundId = uid();
+  if (!DATA.treasury.goldFund) DATA.treasury.goldFund = [];
+  DATA.treasury.goldFund.push({ id:fundId, amount, date, note, convertedId:null });
+  if (!DATA.treasury.categories.find(c=>c.id==='cat-goldfund')) {
+    DATA.treasury.categories.push({ id:'cat-goldfund', name:'Gold Fund', icon:'🪙', color:'#B87818' });
+  }
+  DATA.treasury.transactions.unshift({
+    id:uid(), type:'expense', amount, categoryId:'cat-goldfund',
+    note:'Gold Fund reserve'+(note?' — '+note:''), date, recurring:null, goldFundId:fundId
+  });
+  saveData(); hideModal(); toast('◈ Funds reserved — deducted from balance'); renderCoin();
 }
 
 function saveGold() {
   const grams = parseFloat(document.getElementById('gold-grams').value);
   if (!grams || grams<=0) { toast('Enter valid grams'); return; }
-  DATA.treasury.goldEntries.push({ id:uid(), grams, karat:parseInt(document.getElementById('gold-karat').value)||21, paidEGP:parseFloat(document.getElementById('gold-paid').value)||0, date:document.getElementById('gold-date').value, note:document.getElementById('gold-note').value });
-  saveData(); hideModal(); toast('Gold recorded'); renderCoin();
+  const paid  = parseFloat(document.getElementById('gold-paid').value)||0;
+  const date  = document.getElementById('gold-date').value;
+  const note  = document.getElementById('gold-note')?.value || '';
+  const karat = parseInt(document.getElementById('gold-karat').value)||21;
+  const fromFundId = document.getElementById('gold-from-fund')?.value || '';
+  const goldId = uid();
+
+  DATA.treasury.goldEntries.push({ id:goldId, grams, karat, paidEGP:paid, date, note });
+
+  if (fromFundId) {
+    // Converting an existing gold fund — mark it used, no duplicate expense
+    const f = (DATA.treasury.goldFund||[]).find(x=>x.id===fromFundId);
+    if (f) f.convertedId = goldId;
+  } else if (paid > 0) {
+    // Fresh purchase — log as expense in treasury
+    if (!DATA.treasury.categories.find(c=>c.id==='cat-goldfund')) {
+      DATA.treasury.categories.push({ id:'cat-goldfund', name:'Gold Fund', icon:'🪙', color:'#B87818' });
+    }
+    DATA.treasury.transactions.unshift({
+      id:uid(), type:'expense', amount:paid, categoryId:'cat-goldfund',
+      note:'Gold purchase · '+grams+'g '+karat+'K'+(note?' — '+note:''),
+      date, recurring:null
+    });
+  }
+  saveData(); hideModal(); toast('◈ Gold recorded'); renderCoin();
 }
 
 function deleteGold(id) { DATA.treasury.goldEntries=DATA.treasury.goldEntries.filter(e=>e.id!==id); saveData(); renderCoinBody(); }
+function deleteGoldFund(id) {
+  // Also remove the matching treasury expense transaction
+  DATA.treasury.transactions = DATA.treasury.transactions.filter(t=>t.goldFundId!==id);
+  DATA.treasury.goldFund = (DATA.treasury.goldFund||[]).filter(f=>f.id!==id);
+  saveData(); renderCoinBody(); toast('◈ Fund entry removed');
+}
 
 function renderCoinGoals(el) {
   const goals = DATA.treasury.goals||[];
@@ -2275,24 +2400,78 @@ function shareEntry(id) {
   else { navigator.clipboard?.writeText(text).then(()=>toast('Copied to clipboard')).catch(()=>toast('Copy not available')); }
 }
 
+/* FIX #2 — CHRONICLE CRASH/LOSS
+   Problems:
+   a) Tapping outside the modal (backdrop) called hideModal() which wiped
+      everything the user had typed without saving.
+   b) If the app crashed or was backgrounded by the OS during writing,
+      nothing was saved because we only save on submit.
+   Fix:
+   - Modal is now "protected" for journal entries — backdrop tap is ignored,
+     only the ✕ button can close it (intentional dismiss).
+   - Every keystroke autosaves a draft to localStorage under 'vigil_journal_draft'.
+   - On open, the draft is restored if it exists (for new entries only).
+   - On successful submit or intentional close, the draft is cleared.            */
 function showAddEntry(existing={}) {
   const mode = existing.mode || 'free';
-  const selectedMood = existing.mood||'pensive';
+  _selectedMood = existing.mood || 'pensive';
 
-  showModal(`<div class="modal-title">${existing.id?'Edit Entry':'Nightly Account'}</div>
+  // Restore autosaved draft only for new entries
+  let src = existing;
+  if (!existing.id) {
+    try {
+      const draft = JSON.parse(localStorage.getItem('vigil_journal_draft') || 'null');
+      if (draft) src = draft;
+    } catch(_) {}
+  }
+
+  // Protected modal: backdrop tap won't close it mid-write
+  showModal(`<div class="modal-title">${existing.id ? 'Edit Entry' : 'Nightly Account'}</div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
       <button class="btn btn-sm ${mode==='nightly'||!existing.id?'btn-primary':''}" onclick="switchEntryMode('nightly')">◈ Nightly</button>
       <button class="btn btn-sm ${mode==='free'?'btn-primary':''}" onclick="switchEntryMode('free')">Free Writing</button>
     </div>
-    <div id="entry-form-inner">${buildEntryForm(existing, mode==='free'&&existing.id?'free':'nightly')}</div>`);
+    <div id="entry-form-inner">${buildEntryForm(src, mode==='free'&&existing.id?'free':'nightly')}</div>`, true);
+
+  setTimeout(() => setupJournalAutosave(), 80);
+}
+
+function setupJournalAutosave() {
+  const inner = document.getElementById('modal-inner');
+  if (!inner) return;
+  const saveDraft = () => {
+    try {
+      const draft = {
+        mood: _selectedMood,
+        q1:   document.getElementById('tq-1')?.value   || '',
+        q2:   document.getElementById('tq-2')?.value   || '',
+        q3:   document.getElementById('tq-3')?.value   || '',
+        body: document.getElementById('entry-body')?.value || '',
+        title:document.getElementById('entry-title')?.value || '',
+        tags: document.getElementById('entry-tags')?.value || '',
+        date: document.getElementById('entry-date')?.value || today(),
+      };
+      localStorage.setItem('vigil_journal_draft', JSON.stringify(draft));
+    } catch(_) {}
+  };
+  inner.addEventListener('input', saveDraft);
+}
+
+function clearJournalDraft() {
+  try { localStorage.removeItem('vigil_journal_draft'); } catch(_) {}
 }
 
 function switchEntryMode(mode) {
-  document.getElementById('entry-form-inner').innerHTML = buildEntryForm({}, mode);
+  let src = {};
+  try { src = JSON.parse(localStorage.getItem('vigil_journal_draft')||'{}'); } catch(_) {}
+  document.getElementById('entry-form-inner').innerHTML = buildEntryForm(src, mode);
+  setTimeout(() => setupJournalAutosave(), 80);
 }
 
 function buildEntryForm(e, mode) {
   const selectedMood = e.mood||'pensive';
+  // tags may be array (from saved entry) or comma string (from draft)
+  const tagsVal = Array.isArray(e.tags) ? e.tags.join(', ') : (e.tags||'');
   if (mode === 'nightly') {
     return `<div class="form-group"><label class="form-label">State of Mind</label>
       <div class="mood-selector">${MOODS.map(m=>`<div class="mood-btn ${m.id===selectedMood?'selected':''}" onclick="selectMood('${m.id}',this)"><span class="mood-emoji">${m.emoji}</span><div class="mood-name">${m.name}</div></div>`).join('')}</div></div>
@@ -2302,7 +2481,7 @@ function buildEntryForm(e, mode) {
         <textarea id="tq-2" class="form-control" rows="3" placeholder="Drifted to…">${esc(e.q2||'')}</textarea></div>
       <div class="tq-block"><div class="tq-header"><div class="tq-num">III</div><div class="tq-question">What do you carry forward that was not resolved today?</div></div>
         <textarea id="tq-3" class="form-control" rows="3" placeholder="Open / Unresolved…">${esc(e.q3||'')}</textarea></div>
-      <div class="form-group"><label class="form-label">Tags (comma-separated)</label><input type="text" id="entry-tags" class="form-control" value="${esc((e.tags||[]).join(', '))}" placeholder="e.g. work, health"></div>
+      <div class="form-group"><label class="form-label">Tags (comma-separated)</label><input type="text" id="entry-tags" class="form-control" value="${esc(tagsVal)}" placeholder="e.g. work, health"></div>
       <div class="form-group"><label class="form-label">Date</label><input type="date" id="entry-date" class="form-control" value="${e.date||today()}"></div>
       <button class="btn btn-primary btn-full" onclick="submitEntry('${e.id||''}','nightly')">Record</button>`;
   } else {
@@ -2310,7 +2489,7 @@ function buildEntryForm(e, mode) {
       <div class="form-group"><label class="form-label">State of Mind</label>
         <div class="mood-selector">${MOODS.map(m=>`<div class="mood-btn ${m.id===(e.mood||'pensive')?'selected':''}" onclick="selectMood('${m.id}',this)"><span class="mood-emoji">${m.emoji}</span><div class="mood-name">${m.name}</div></div>`).join('')}</div></div>
       <div class="form-group"><label class="form-label">Entry</label><textarea id="entry-body" class="form-control" rows="7" placeholder="Write freely…">${esc(e.body||'')}</textarea></div>
-      <div class="form-group"><label class="form-label">Tags</label><input type="text" id="entry-tags" class="form-control" value="${esc((e.tags||[]).join(', '))}" placeholder="e.g. shadow, work, gratitude"></div>
+      <div class="form-group"><label class="form-label">Tags</label><input type="text" id="entry-tags" class="form-control" value="${esc(tagsVal)}" placeholder="e.g. shadow, work, gratitude"></div>
       <div class="form-group"><label class="form-label">Date</label><input type="date" id="entry-date" class="form-control" value="${e.date||today()}"></div>
       <button class="btn btn-primary btn-full" onclick="submitEntry('${e.id||''}','free')">Record</button>`;
   }
@@ -2334,11 +2513,12 @@ function submitEntry(id, mode) {
   }
   if (id) { const i=DATA.journal.entries.findIndex(e=>e.id===id); if(i>=0) DATA.journal.entries[i]=entry; }
   else DATA.journal.entries.push(entry);
-  saveData(); hideModal(); vibrate([50,20,80]); toast('◈ Recorded'); renderWhispers();
+  clearJournalDraft();
+  saveData(); forceHideModal(); vibrate([50,20,80]); toast('◈ Recorded'); renderWhispers();
 }
 
-function editEntry(id)   { const e=DATA.journal.entries.find(x=>x.id===id); if(e){_selectedMood=e.mood||'pensive'; hideModal(); setTimeout(()=>showAddEntry(e),300);} }
-function deleteEntry(id) { DATA.journal.entries=DATA.journal.entries.filter(e=>e.id!==id); saveData(); hideModal(); renderWhispers(); toast('Removed'); }
+function editEntry(id)   { const e=DATA.journal.entries.find(x=>x.id===id); if(e){_selectedMood=e.mood||'pensive'; forceHideModal(); setTimeout(()=>showAddEntry(e),300);} }
+function deleteEntry(id) { DATA.journal.entries=DATA.journal.entries.filter(e=>e.id!==id); saveData(); forceHideModal(); renderWhispers(); toast('Removed'); }
 
 function renderPatterns(el) {
   const entries = DATA.journal.entries;

@@ -781,3 +781,23 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
   .fab      { bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 14px); }
   #toast    { bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 12px); }
 }
+
+/* ── CARRY-FORWARD BAR (Fix #3 — monthly running total) ── */
+.carry-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: rgba(184,120,24,0.06);
+  border: 1px solid var(--amber-border);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-family: var(--cairo);
+  font-size: 11px;
+  color: var(--text-stone);
+  letter-spacing: 0.05em;
+}
+.carry-label { color: var(--text-stone); }
+.carry-val   { font-weight: 700; font-size: 12px; }
+.carry-arrow { color: var(--amber-dim); font-size: 13px; }
